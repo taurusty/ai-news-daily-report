@@ -14,6 +14,8 @@ import nltk
 import json
 import re
 from urllib.parse import quote, urljoin
+import argparse
+from datetime import datetime
 
 # 确保nltk数据包已下载
 try:
@@ -35,6 +37,23 @@ os.makedirs(DATA_DIR, exist_ok=True)
 
 # 定义超时设置，避免爬虫卡住
 TIMEOUT = 10
+
+# 定义可用的主题
+TOPICS = {
+    "1": {
+        "name": "大模型",
+        "keywords": ["大模型", "GPT", "人工智能", "AI大模型", "AIGC", "LLM", "生成式AI"],
+        "report_name": "大模型日报"
+    },
+    "2": {
+        "name": "凝血抗凝",
+        "keywords": ["凝血", "抗凝", "血栓", "抗凝药", "华法林", "肝素", "血小板", "凝血因子", "抗血栓"],
+        "report_name": "凝血抗凝日报"
+    }
+}
+
+# 默认主题
+DEFAULT_TOPIC = "1"
 
 # Server酱配置 (需要自行注册Server酱并设置SCKEY)
 # 获取方式：登录 https://sct.ftqq.com/ 获取
@@ -372,219 +391,147 @@ def extract_keywords(text, top_n=5):
         return []
     return jieba.analyse.textrank(text, topK=top_n)
 
-def fetch_wechat_news():
-    """从搜狗微信搜索获取大模型相关新闻"""
-    print("正在从搜狗微信获取公众号文章...")
+def fetch_wechat_news(topic_id=DEFAULT_TOPIC):
+    """从搜狗微信获取特定主题相关新闻"""
+    topic = TOPICS.get(topic_id, TOPICS[DEFAULT_TOPIC])
+    print(f"开始获取{topic['name']}相关新闻...")
+    
     news_items = []
+    keywords = topic["keywords"]
     
-    # 搜索关键词列表
-    keywords = ["大模型", "ChatGPT", "GPT", "人工智能 大模型", "LLM"]
-    
+    # 对每个关键词进行搜索
     for keyword in keywords:
+        print(f"搜索关键词: {keyword}")
+        url = "https://weixin.sogou.com/weixin"
+        params = {
+            "type": 2,
+            "query": keyword,
+            "ie": "utf8",
+            "s_from": "input",
+            "from": "input",
+            "_sug_": "n",
+            "_sug_type_": "",
+        }
+        
+        headers = get_random_headers()
         try:
-            url = "https://weixin.sogou.com/weixin"
-            params = {
-                "type": 2,  # 搜索类型，2表示文章
-                "query": keyword,  # 搜索关键词
-                "ie": "utf8",
-                "s_from": "input",
-                "from": "input",
-                "_sug_": "n",
-                "_sug_type_": ""
-            }
-            
-            headers = get_random_headers()
-            # 添加一些额外的请求头，使请求更像浏览器发出的
-            headers.update({
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-                "Accept-Language": "zh-CN,zh;q=0.8,en-US;q=0.5,en;q=0.3",
-                "Accept-Encoding": "gzip, deflate, br",
-                "Connection": "keep-alive",
-                "Upgrade-Insecure-Requests": "1",
-                "Sec-Fetch-Dest": "document",
-                "Sec-Fetch-Mode": "navigate",
-                "Sec-Fetch-Site": "none",
-                "Sec-Fetch-User": "?1",
-                "Cache-Control": "max-age=0",
-            })
-            
             response = requests.get(url, params=params, headers=headers, timeout=TIMEOUT)
-            response.encoding = 'utf-8'
             
-            if response.status_code != 200:
-                print(f"搜狗微信搜索请求失败: {response.status_code}")
-                continue
-            
-            soup = BeautifulSoup(response.text, 'html.parser')
-            
-            # 检查是否有验证码
-            if "验证码" in response.text or "请输入验证码" in response.text:
-                print("搜狗微信搜索需要验证码，请稍后再试或使用代理IP")
-                continue
-            
-            # 尝试多个可能的选择器
-            articles = soup.select(".news-box .news-list li")
-            
-            if not articles:
+            if response.status_code == 200:
+                soup = BeautifulSoup(response.text, 'html.parser')
                 articles = soup.select("ul.news-list li")
-            
-            if not articles:
-                print(f"未找到微信公众号文章，可能需要更新选择器。关键词: {keyword}")
-                continue
                 
-            print(f"找到 {len(articles)} 篇与 '{keyword}' 相关的微信公众号文章")
-            
-            for article in articles:
-                try:
-                    # 尝试提取标题和链接
-                    title_elem = article.select_one("h3 a") or article.select_one("h4 a")
-                    if not title_elem:
-                        continue
-                    
-                    title = title_elem.get_text(strip=True)
-                    article_url = title_elem.get("href", "")
-                    
-                    # 完整的URL可能需要拼接
-                    if article_url.startswith('/'):
-                        article_url = urljoin("https://weixin.sogou.com", article_url)
-                    
-                    # 提取公众号名称（来源）
-                    source_elem = article.select_one(".account") or article.select_one(".s-p")
-                    source = "未知公众号"
-                    if source_elem:
-                        source = source_elem.get_text(strip=True)
-                    
-                    # 提取发布时间
-                    time_elem = article.select_one(".s2 span") or article.select_one(".s2")
-                    pub_time = "今天"
-                    if time_elem:
-                        pub_time_text = time_elem.get_text(strip=True)
-                        if pub_time_text:
-                            pub_time = pub_time_text
-                    
-                    # 提取文章摘要
-                    summary_elem = article.select_one(".txt-info") or article.select_one(".txt_info")
-                    summary = ""
-                    if summary_elem:
-                        summary = summary_elem.get_text(strip=True)
-                    
-                    # 如果摘要为空，尝试获取整个内容区域的文本
-                    if not summary:
-                        # 复制article元素，移除标题和来源元素
-                        content_article = article.copy()
-                        for elem in content_article.select("h3, h4, .account, .s-p, .s2"):
-                            if elem:
-                                elem.decompose()
+                print(f"找到 {len(articles)} 篇与 '{keyword}' 相关的微信公众号文章")
+                
+                for article in articles:
+                    try:
+                        # 提取标题和链接
+                        title_elem = article.select_one("h3 a")
+                        if not title_elem:
+                            continue
                         
-                        summary = content_article.get_text(strip=True)
-                    
-                    # 计算热度分数
-                    heat_score = calculate_wechat_heat(source, title, pub_time, keyword)
-                    
-                    # 创建新闻条目
-                    news_item = NewsItem(
-                        title=title,
-                        url=article_url,
-                        source=source,
-                        date=datetime.datetime.now().strftime("%Y-%m-%d"),
-                        summary=summary,
-                        heat_score=heat_score
-                    )
-                    
-                    news_items.append(news_item)
-                    
-                except Exception as e:
-                    print(f"处理微信公众号文章时出错: {e}")
-            
-            # 每个关键词搜索后休眠，避免频繁请求
-            time.sleep(random.uniform(3, 5))
-            
+                        title = title_elem.get_text(strip=True)
+                        article_url = title_elem.get("href")
+                        if article_url.startswith('/'):
+                            article_url = "https://weixin.sogou.com" + article_url
+                        
+                        # 提取公众号名称
+                        source_elem = article.select_one(".account")
+                        source = source_elem.get_text(strip=True) if source_elem else "未知公众号"
+                        
+                        # 提取发布时间
+                        time_elem = article.select_one(".s2")
+                        pub_time = time_elem.get_text(strip=True) if time_elem else ""
+                        
+                        # 提取摘要
+                        summary_elem = article.select_one(".txt-info")
+                        summary = summary_elem.get_text(strip=True) if summary_elem else ""
+                        
+                        # 计算热度分数
+                        heat_score = calculate_wechat_heat(source, title, pub_time, keyword)
+                        
+                        # 创建新闻条目
+                        news_item = NewsItem(
+                            title=title,
+                            url=article_url,
+                            source=source,
+                            date=datetime.now().strftime("%Y-%m-%d"),
+                            summary=summary,
+                            heat_score=heat_score
+                        )
+                        
+                        # 检查是否已存在相同标题或URL的新闻
+                        if not any(item.title == title or item.url == article_url for item in news_items):
+                            news_items.append(news_item)
+                        
+                    except Exception as e:
+                        print(f"处理微信公众号文章时出错: {e}")
+                        continue
+            else:
+                print(f"请求失败，状态码: {response.status_code}")
+                
         except Exception as e:
-            print(f"获取微信公众号文章时发生错误: {e}")
+            print(f"搜索关键词 '{keyword}' 时出错: {e}")
+        
+        # 每个关键词搜索后休眠，避免频繁请求
+        time.sleep(random.uniform(3, 5))
     
     print(f"总共获取了 {len(news_items)} 条微信公众号文章")
     return news_items
 
 def calculate_wechat_heat(account_name, title, pub_time, keyword):
-    """计算微信公众号文章热度"""
-    base_score = 40  # 基础分数
+    """计算微信公众号文章的热度分数"""
+    # 基础分数
+    base_score = 50
     
-    # 知名公众号名单及其权重
-    famous_accounts = {
-        "腾讯AI实验室": 30,
-        "腾讯研究院": 30,
-        "百度AI": 30,
-        "智源研究院": 25,
-        "AI科技评论": 25,
-        "机器之心": 25,
-        "量子位": 25,
-        "新智元": 25,
-        "人工智能学家": 20,
-        "AIGC": 20,
-        "专知": 20,
-        "AI前线": 20,
-        "AI新媒体联盟": 20,
-        "中国人工智能学会": 20,
-    }
+    # 公众号权重分数 (知名公众号加分)
+    account_score = 0
+    important_accounts = [
+        "中国医学论坛报", "医脉通", "丁香医生", "医学界", "中华医学杂志", 
+        "NEJM医学前沿", "柳叶刀", "血栓与止血", "中华血液学杂志", "中国循环杂志"
+    ]
     
-    # 根据公众号名称加分
-    for account, score in famous_accounts.items():
-        if account in account_name:
-            base_score += score
-            break
-    else:
-        # 如果不在知名列表中，但有一些关键词，也加分
-        media_keywords = ["AI", "人工智能", "科技", "技术", "学院", "研究", "实验室"]
-        for media_keyword in media_keywords:
-            if media_keyword in account_name:
-                base_score += 10
-                break
+    if account_name in important_accounts:
+        account_score = 20
+    elif "医" in account_name or "健康" in account_name or "血液" in account_name or "心脏" in account_name:
+        account_score = 10
     
-    # 标题权重
-    title_keywords = {
-        "大模型": 15,
-        "GPT-4": 15,
-        "GPT4": 15,
-        "ChatGPT": 15,
-        "LLM": 10,
-        "AIGC": 10,
-        "人工智能": 5,
-        "AI": 5,
-        "模型": 5,
-        "Transformer": 10,
-        "自然语言处理": 5,
-        "NLP": 5,
-        "机器学习": 5,
-        "深度学习": 5,
-    }
-    
-    # 根据标题关键词加分
-    for title_keyword, score in title_keywords.items():
-        if title_keyword in title:
-            base_score += score
-    
-    # 搜索关键词权重 - 精确匹配的关键词分数更高
+    # 标题相关性分数
+    title_score = 0
     if keyword in title:
-        base_score += 15
+        title_score = 15
     
-    # 时间权重
-    if "今天" in pub_time:
-        base_score += 20
-    elif "小时" in pub_time:
-        # 提取小时数
-        hour_match = re.search(r'(\d+)小时', pub_time)
-        if hour_match:
-            hours = int(hour_match.group(1))
-            if hours <= 6:
-                base_score += 15
-            else:
-                base_score += 10
-    elif "分钟" in pub_time:
-        base_score += 20
-    elif "昨天" in pub_time:
-        base_score += 5
+    # 时间衰减因子 (越新的文章分数越高)
+    time_score = 0
+    if pub_time:
+        try:
+            # 尝试解析发布时间
+            if "小时前" in pub_time:
+                hours = int(pub_time.replace("小时前", "").strip())
+                time_score = max(15 - hours * 0.5, 0)  # 每小时减少0.5分，最低0分
+            elif "天前" in pub_time:
+                days = int(pub_time.replace("天前", "").strip())
+                time_score = max(10 - days * 2, 0)  # 每天减少2分，最低0分
+            elif "刚刚" in pub_time:
+                time_score = 15
+            elif "月" in pub_time and "日" in pub_time:
+                # 处理"3月1日"格式
+                current_year = datetime.now().year
+                month_day = pub_time.split(" ")[0]  # 取日期部分
+                month = int(month_day.split("月")[0])
+                day = int(month_day.split("月")[1].replace("日", ""))
+                
+                pub_date = datetime(current_year, month, day)
+                days_diff = (datetime.now() - pub_date).days
+                
+                time_score = max(10 - days_diff * 2, 0)
+        except Exception as e:
+            print(f"解析发布时间出错: {e}")
     
-    return base_score
+    # 计算总分
+    total_score = base_score + account_score + title_score + time_score
+    
+    return min(total_score, 100)  # 最高100分
 
 def extract_wechat_article_summary(url):
     """从微信文章页面提取摘要"""
@@ -654,135 +601,95 @@ def extract_wechat_article_summary(url):
         print(f"提取微信文章摘要时出错: {e}")
         return "提取微信文章摘要时出错"
 
-def generate_daily_report():
-    """生成每日日报并保存为CSV"""
-    print("开始生成每日大模型新闻日报...")
+def generate_daily_report(topic_id=DEFAULT_TOPIC):
+    """生成每日新闻报告，根据指定的主题"""
+    topic = TOPICS.get(topic_id, TOPICS[DEFAULT_TOPIC])
+    today = datetime.now().strftime("%Y-%m-%d")
+    print(f"开始生成{topic['name']}日报 ({today})...")
     
-    today = datetime.datetime.now().strftime("%Y-%m-%d")
-    filename = os.path.join(DATA_DIR, f"大模型日报_{today}.csv")
-    
-    # 只从微信公众号获取新闻
-    news_items = []
-    news_items.extend(fetch_wechat_news())
+    # 获取新闻数据
+    news_items = fetch_wechat_news(topic_id)
     
     if not news_items:
-        print("未获取到任何微信公众号文章，请检查网络连接或更新选择器")
+        print(f"未找到{topic['name']}相关新闻，日报生成失败")
         return None
     
-    # 去重 (基于URL和标题)
-    unique_urls = set()
-    unique_titles = set()
-    unique_news = []
+    # 按热度排序，取前10条
+    news_items.sort(key=lambda x: x.heat_score, reverse=True)
+    top_news = news_items[:10]
     
-    for item in news_items:
-        # 使用URL和标题的组合进行去重
-        if item.url not in unique_urls and item.title not in unique_titles and item.url:
-            unique_urls.add(item.url)
-            unique_titles.add(item.title)
-            unique_news.append(item)
-    
-    print(f"去重后剩余 {len(unique_news)} 条微信公众号文章")
-    
-    # 按热度分数排序
-    sorted_news = sorted(unique_news, key=lambda x: x.heat_score, reverse=True)
-    
-    # 只保留前10条新闻
-    top_news = sorted_news[:10] if len(sorted_news) > 10 else sorted_news
-    
-    # 获取详细摘要（如果原来没有或摘要太短）
-    for i, item in enumerate(top_news):
-        print(f"正在处理第 {i+1}/{len(top_news)} 条新闻: {item.title[:20]}...")
-        
-        # 如果摘要为空或者长度不足，尝试获取更详细的摘要
-        if not item.summary or len(item.summary) < 30:
-            try:
-                # 使用专门的函数提取微信文章摘要
-                new_summary = extract_wechat_article_summary(item.url)
-                if new_summary and new_summary not in ["无法提取微信文章摘要", "提取微信文章摘要时出错"]:
-                    item.summary = new_summary
-                    print(f"  成功获取微信文章摘要")
-                else:
-                    print(f"  无法获取微信文章摘要，保留原摘要")
-            except Exception as e:
-                print(f"  处理摘要时发生错误: {e}")
-        else:
-            print(f"  已有足够长度的摘要，跳过")
-        
-        # 休眠一下，避免请求过快
-        time.sleep(random.uniform(1, 3))
+    # 确保所有文章都有摘要
+    for item in top_news:
+        if not item.summary or len(item.summary) < 50:
+            print(f"获取文章摘要: {item.title}")
+            item.summary = extract_wechat_article_summary(item.url)
     
     # 保存为CSV
-    try:
-        with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
-            writer = csv.writer(csvfile, quoting=csv.QUOTE_MINIMAL)
-            writer.writerow(['日期', '标题', '内容摘要', '信息来源', 'URL', '热度分数'])
+    report_filename = f"{topic['report_name']}_{today}.csv"
+    report_path = os.path.join(DATA_DIR, report_filename)
+    with open(report_path, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f, quoting=csv.QUOTE_MINIMAL)
+        writer.writerow(['日期', '标题', '内容摘要', '信息来源', 'URL', '热度'])
+        
+        for item in top_news:
+            # 清理字段，确保没有换行符和额外的逗号
+            title = item.title.replace('\n', ' ').replace('\r', '')
+            summary = item.summary.replace('\n', ' ').replace('\r', '') if item.summary else ""
+            source = item.source.replace('\n', ' ').replace('\r', '')
             
-            for item in top_news:
-                # 处理摘要中可能包含的逗号、换行符等，避免CSV格式错误
-                summary = item.summary if item.summary else "无摘要"
-                # 移除摘要中的换行符
-                summary = summary.replace('\n', ' ').replace('\r', ' ')
-                
-                # 确保信息来源字段没有多余的逗号
-                source = item.source.strip().rstrip(',') if item.source else "未知公众号"
-                
-                writer.writerow([
-                    today,
-                    item.title,
-                    summary,
-                    source,
-                    item.url,
-                    item.heat_score
-                ])
-        
-        print(f"日报已保存到 {filename}")
-        
-        # 将日报推送到微信
-        push_to_wechat(top_news, today)
-        
-        return filename
-    except Exception as e:
-        print(f"保存CSV文件时出错: {e}")
-        return None
+            writer.writerow([
+                today,
+                title,
+                summary,
+                source,
+                item.url,
+                item.heat_score
+            ])
+    
+    print(f"{topic['report_name']}已保存到: {report_path}")
+    
+    # 如果设置了Server酱SendKey，推送到微信
+    if SERVERCHAN_SEND_KEY:
+        print("推送到微信...")
+        push_to_wechat(top_news, today, topic_id)
+    else:
+        print("未配置Server酱SendKey，跳过微信推送")
+    
+    return report_path
 
-def push_to_wechat(news_items, date):
+def push_to_wechat(news_items, date, topic_id=DEFAULT_TOPIC):
     """将日报推送到微信"""
     if not SERVERCHAN_SEND_KEY:
-        print("未配置Server酱SendKey，跳过微信推送")
+        print("未配置Server酱SendKey，无法推送到微信")
         return False
     
+    topic = TOPICS.get(topic_id, TOPICS[DEFAULT_TOPIC])
+    
+    # 构建标题
+    title = f"{topic['report_name']} ({date})"
+    
+    # 构建正文内容（Markdown格式）
+    content = f"# {title}\n\n## 今日热点新闻：\n\n"
+    
+    # 添加每条新闻
+    for i, item in enumerate(news_items, 1):
+        summary = item.summary[:100] + "..." if item.summary and len(item.summary) > 100 else (item.summary or "无摘要")
+        content += f"{i}. [{item.title}]({item.url}) | 来源: {item.source} | 热度: {item.heat_score}\n"
+        content += f"   > {summary}\n\n"
+    
+    # 添加日报生成时间
+    content += f"\n\n---\n*日报生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*"
+    
+    # 发送到Server酱
+    server_url = f"https://sctapi.ftqq.com/{SERVERCHAN_SEND_KEY}.send"
+    payload = {
+        "title": title,
+        "desp": content
+    }
+    
     try:
-        # 构建微信推送内容
-        title = f"大模型日报 - {date}"
-        
-        # 构建正文内容，使用Markdown格式
-        desp = f"# 今日大模型热点新闻 ({date})\n\n"
-        
-        for i, item in enumerate(news_items):
-            # 清理摘要文本
-            summary = item.summary if item.summary else "无摘要"
-            if len(summary) > 100:
-                summary = summary[:100] + "..."
-            
-            # 添加新闻条目，使用Markdown格式
-            desp += f"### {i+1}. {item.title}\n"
-            desp += f"**来源**: {item.source}  **热度**: {item.heat_score}\n\n"
-            desp += f"{summary}\n\n"
-            desp += f"[阅读原文]({item.url})\n\n"
-            desp += "---\n\n"
-        
-        # 添加日报生成时间脚注
-        desp += f"\n\n*日报生成时间: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*"
-        
-        # 发送到Server酱
-        send_url = f"https://sctapi.ftqq.com/{SERVERCHAN_SEND_KEY}.send"
-        data = {
-            "title": title,
-            "desp": desp
-        }
-        
-        response = requests.post(send_url, data=data, timeout=TIMEOUT)
-        result = response.json()
+        response = requests.post(server_url, data=payload)
+        result = json.loads(response.text)
         
         if result.get("code") == 0:
             print("微信推送成功！")
@@ -795,42 +702,60 @@ def push_to_wechat(news_items, date):
         print(f"微信推送出错: {e}")
         return False
 
-def run_daily():
-    """设置每日运行的任务"""
-    print("设置每天早上8点自动生成大模型日报...")
-    schedule.every().day.at("08:00").do(generate_daily_report)
+def run_daily(topic_id=DEFAULT_TOPIC, send_key=None):
+    """设置每天定时运行"""
+    if send_key:
+        global SERVERCHAN_SEND_KEY
+        SERVERCHAN_SEND_KEY = send_key
+        print(f"Server酱SendKey已设置")
+    
+    print(f"已设置每天早上8:00自动生成{TOPICS[topic_id]['name']}日报...")
+    schedule.every().day.at("08:00").do(generate_daily_report, topic_id)
     
     while True:
         schedule.run_pending()
-        time.sleep(60)  # 每分钟检查一次
+        time.sleep(60)
 
-def run_now():
+def run_now(topic_id=DEFAULT_TOPIC, send_key=None):
     """立即运行一次"""
-    return generate_daily_report()
+    if send_key:
+        global SERVERCHAN_SEND_KEY
+        SERVERCHAN_SEND_KEY = send_key
+        print(f"Server酱SendKey已设置")
+    
+    generate_daily_report(topic_id)
 
 if __name__ == "__main__":
-    import argparse
+    parser = argparse.ArgumentParser(description="自动生成特定主题的日报并推送到微信")
     
-    parser = argparse.ArgumentParser(description='大模型新闻自动日报生成器')
-    parser.add_argument('--now', action='store_true', help='立即运行一次')
-    parser.add_argument('--schedule', action='store_true', help='设置定时运行')
-    parser.add_argument('--sendkey', type=str, help='设置Server酱SendKey用于微信推送')
+    # 创建互斥组，确保--now和--schedule不能同时使用
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--now", action="store_true", help="立即运行一次")
+    group.add_argument("--schedule", action="store_true", help="设置每天自动运行")
+    
+    # 添加主题选择参数
+    parser.add_argument("--topic", choices=["1", "2"], default=DEFAULT_TOPIC, 
+                      help="选择主题: 1=大模型, 2=凝血抗凝")
+    
+    # 添加Server酱SendKey参数
+    parser.add_argument("--sendkey", type=str, help="Server酱SendKey，用于推送到微信")
     
     args = parser.parse_args()
     
-    # 如果提供了SendKey参数，则更新全局变量
-    if args.sendkey:
-        SERVERCHAN_SEND_KEY = args.sendkey
-        print(f"已设置Server酱SendKey，微信推送功能已启用")
-    
     if args.now:
-        run_now()
+        run_now(args.topic, args.sendkey)
     elif args.schedule:
-        run_daily()
+        run_daily(args.topic, args.sendkey)
     else:
-        # 默认立即运行一次，并显示帮助信息
-        run_now()
-        print("\n使用说明:")
-        print("  --now: 立即生成一次日报")
-        print("  --schedule: 设置每天自动运行")
-        print("  --sendkey KEY: 设置Server酱SendKey用于微信推送") 
+        print("自动新闻日报生成工具")
+        print("\n用法:")
+        print("  立即生成一次: python news_crawler.py --now [--topic {1,2}] [--sendkey YOUR_SENDKEY]")
+        print("  设置每天自动运行: python news_crawler.py --schedule [--topic {1,2}] [--sendkey YOUR_SENDKEY]")
+        print("\n主题选项:")
+        for key, value in TOPICS.items():
+            print(f"  {key} = {value['name']}")
+        print("\n示例:")
+        print("  python news_crawler.py --now --topic 1 --sendkey YOUR_SENDKEY")
+        
+        # 默认行为：立即运行一次
+        run_now(DEFAULT_TOPIC) 

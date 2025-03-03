@@ -1,15 +1,16 @@
 # 大模型新闻自动日报生成器
 
-该项目是一个自动化工具，用于每天自动爬取和汇总关于大模型（AI大语言模型）方面的新闻，并将其总结成日报形式保存到本地CSV文件中。同时，还可以将日报内容推送到您的微信上，方便随时查看最新动态。
+该项目是一个自动化工具，用于每天自动爬取和汇总关于特定主题（如大模型、凝血抗凝医学）方面的新闻，并将其总结成日报形式保存到本地CSV文件中。同时，还可以将日报内容推送到您的微信上，方便随时查看最新动态。
 
 ## 功能特点
 
-- 自动从微信公众号文章中爬取大模型相关新闻
+- 支持多个主题的新闻爬取（目前支持：大模型、凝血抗凝）
+- 自动从微信公众号文章中爬取相关新闻
 - 按热度排序，筛选出最热门的前10条新闻
 - 自动提取新闻摘要
 - 将结果以CSV格式保存在本地，包含日期、标题、内容摘要、信息来源（公众号名称）、URL等信息
 - 支持定时运行，每天自动生成日报
-- **微信推送功能**：支持将日报内容推送到微信，随时掌握大模型领域最新动态
+- **微信推送功能**：支持将日报内容推送到微信，随时掌握最新动态
 
 ## 项目结构
 
@@ -37,19 +38,33 @@ pip install -r requirements.txt
 
 ## 使用方法
 
+### 选择主题
+
+目前支持两个主题：
+- `1` - 大模型：爬取人工智能大模型相关新闻
+- `2` - 凝血抗凝：爬取医学领域凝血抗凝相关新闻
+
 ### 立即运行一次
 
 ```bash
+# 默认爬取大模型主题
 python news_crawler.py --now
+
+# 指定爬取凝血抗凝主题
+python news_crawler.py --now --topic 2
 ```
 
 ### 设置为每天自动运行
 
 ```bash
+# 默认爬取大模型主题
 python news_crawler.py --schedule
+
+# 指定爬取凝血抗凝主题
+python news_crawler.py --schedule --topic 2
 ```
 
-此模式将设置程序在每天早上8:00自动运行，生成当天的大模型新闻日报。
+此模式将设置程序在每天早上8:00自动运行，生成当天的新闻日报。
 
 ### 启用微信推送功能
 
@@ -60,20 +75,24 @@ python news_crawler.py --schedule
 3. 在运行脚本时使用`--sendkey`参数：
 
 ```bash
+# 立即爬取大模型主题并推送到微信
 python news_crawler.py --now --sendkey 您的SendKey
-```
 
-或者设置为每天自动运行并推送到微信：
+# 立即爬取凝血抗凝主题并推送到微信
+python news_crawler.py --now --topic 2 --sendkey 您的SendKey
 
-```bash
+# 设置每天自动爬取大模型主题并推送到微信
 python news_crawler.py --schedule --sendkey 您的SendKey
+
+# 设置每天自动爬取凝血抗凝主题并推送到微信
+python news_crawler.py --schedule --topic 2 --sendkey 您的SendKey
 ```
 
 您也可以直接在脚本中设置SendKey：打开`news_crawler.py`文件，找到`SERVERCHAN_SEND_KEY = ""`这一行，将您的SendKey填入引号中即可。
 
 ### 默认模式
 
-直接运行脚本（不带参数）将立即生成一次日报，并显示帮助信息：
+直接运行脚本（不带参数）将立即生成一次大模型日报，并显示帮助信息：
 
 ```bash
 python news_crawler.py
@@ -81,12 +100,14 @@ python news_crawler.py
 
 ## 输出文件
 
-日报文件将保存在`daily_reports`目录下，文件名格式为`大模型日报_YYYY-MM-DD.csv`。
+日报文件将保存在`daily_reports`目录下，文件名格式为：
+- 大模型主题：`大模型日报_YYYY-MM-DD.csv`
+- 凝血抗凝主题：`凝血抗凝日报_YYYY-MM-DD.csv`
 
 ## 微信推送效果
 
 推送到微信的内容会以markdown格式呈现，包含以下内容：
-- 标题（日期）
+- 标题（主题和日期）
 - 热点新闻列表（按热度排序）
 - 每条新闻的标题、来源（公众号名称）、热度、摘要及原文链接
 - 日报生成时间
@@ -125,13 +146,14 @@ python news_crawler.py
 - `extract_wechat_article_summary()`: 改进微信文章摘要提取方法
 - `generate_daily_report()`: 调整日报生成逻辑和格式
 - `push_to_wechat()`: 修改微信推送的内容格式
+- `TOPICS`: 添加新的主题及其关键词
 
 ## 常见问题
 
 1. **Q: 如何在服务器上持续运行此脚本？**
    A: 可以使用`nohup`命令或设置系统的`crontab`任务：
    ```bash
-   nohup python news_crawler.py --schedule &
+   nohup python news_crawler.py --schedule --topic 1 &
    ```
 
 2. **Q: 运行时提示"需要验证码"怎么办？**
@@ -143,6 +165,9 @@ python news_crawler.py
 
 3. **Q: CSV文件中的中文显示乱码怎么办？**
    A: 确保使用支持UTF-8编码的编辑器或Excel导入工具打开CSV文件。
+
+4. **Q: 如何添加新的主题？**
+   A: 在`news_crawler.py`文件中找到`TOPICS`字典，按照现有格式添加新主题及其关键词。
 
 ## 贡献指南
 
