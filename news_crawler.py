@@ -12,6 +12,8 @@ import jieba.analyse
 import schedule
 import nltk
 import json
+import re
+from urllib.parse import quote, urljoin
 
 # 确保nltk数据包已下载
 try:
@@ -370,6 +372,288 @@ def extract_keywords(text, top_n=5):
         return []
     return jieba.analyse.textrank(text, topK=top_n)
 
+def fetch_wechat_news():
+    """从搜狗微信搜索获取大模型相关新闻"""
+    print("正在从搜狗微信获取公众号文章...")
+    news_items = []
+    
+    # 搜索关键词列表
+    keywords = ["大模型", "ChatGPT", "GPT", "人工智能 大模型", "LLM"]
+    
+    for keyword in keywords:
+        try:
+            url = "https://weixin.sogou.com/weixin"
+            params = {
+                "type": 2,  # 搜索类型，2表示文章
+                "query": keyword,  # 搜索关键词
+                "ie": "utf8",
+                "s_from": "input",
+                "from": "input",
+                "_sug_": "n",
+                "_sug_type_": ""
+            }
+            
+            headers = get_random_headers()
+            # 添加一些额外的请求头，使请求更像浏览器发出的
+            headers.update({
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                "Accept-Language": "zh-CN,zh;q=0.8,en-US;q=0.5,en;q=0.3",
+                "Accept-Encoding": "gzip, deflate, br",
+                "Connection": "keep-alive",
+                "Upgrade-Insecure-Requests": "1",
+                "Sec-Fetch-Dest": "document",
+                "Sec-Fetch-Mode": "navigate",
+                "Sec-Fetch-Site": "none",
+                "Sec-Fetch-User": "?1",
+                "Cache-Control": "max-age=0",
+            })
+            
+            response = requests.get(url, params=params, headers=headers, timeout=TIMEOUT)
+            response.encoding = 'utf-8'
+            
+            if response.status_code != 200:
+                print(f"搜狗微信搜索请求失败: {response.status_code}")
+                continue
+            
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # 检查是否有验证码
+            if "验证码" in response.text or "请输入验证码" in response.text:
+                print("搜狗微信搜索需要验证码，请稍后再试或使用代理IP")
+                continue
+            
+            # 尝试多个可能的选择器
+            articles = soup.select(".news-box .news-list li")
+            
+            if not articles:
+                articles = soup.select("ul.news-list li")
+            
+            if not articles:
+                print(f"未找到微信公众号文章，可能需要更新选择器。关键词: {keyword}")
+                continue
+                
+            print(f"找到 {len(articles)} 篇与 '{keyword}' 相关的微信公众号文章")
+            
+            for article in articles:
+                try:
+                    # 尝试提取标题和链接
+                    title_elem = article.select_one("h3 a") or article.select_one("h4 a")
+                    if not title_elem:
+                        continue
+                    
+                    title = title_elem.get_text(strip=True)
+                    article_url = title_elem.get("href", "")
+                    
+                    # 完整的URL可能需要拼接
+                    if article_url.startswith('/'):
+                        article_url = urljoin("https://weixin.sogou.com", article_url)
+                    
+                    # 提取公众号名称（来源）
+                    source_elem = article.select_one(".account") or article.select_one(".s-p")
+                    source = "未知公众号"
+                    if source_elem:
+                        source = source_elem.get_text(strip=True)
+                    
+                    # 提取发布时间
+                    time_elem = article.select_one(".s2 span") or article.select_one(".s2")
+                    pub_time = "今天"
+                    if time_elem:
+                        pub_time_text = time_elem.get_text(strip=True)
+                        if pub_time_text:
+                            pub_time = pub_time_text
+                    
+                    # 提取文章摘要
+                    summary_elem = article.select_one(".txt-info") or article.select_one(".txt_info")
+                    summary = ""
+                    if summary_elem:
+                        summary = summary_elem.get_text(strip=True)
+                    
+                    # 如果摘要为空，尝试获取整个内容区域的文本
+                    if not summary:
+                        # 复制article元素，移除标题和来源元素
+                        content_article = article.copy()
+                        for elem in content_article.select("h3, h4, .account, .s-p, .s2"):
+                            if elem:
+                                elem.decompose()
+                        
+                        summary = content_article.get_text(strip=True)
+                    
+                    # 计算热度分数
+                    heat_score = calculate_wechat_heat(source, title, pub_time, keyword)
+                    
+                    # 创建新闻条目
+                    news_item = NewsItem(
+                        title=title,
+                        url=article_url,
+                        source=source,
+                        date=datetime.datetime.now().strftime("%Y-%m-%d"),
+                        summary=summary,
+                        heat_score=heat_score
+                    )
+                    
+                    news_items.append(news_item)
+                    
+                except Exception as e:
+                    print(f"处理微信公众号文章时出错: {e}")
+            
+            # 每个关键词搜索后休眠，避免频繁请求
+            time.sleep(random.uniform(3, 5))
+            
+        except Exception as e:
+            print(f"获取微信公众号文章时发生错误: {e}")
+    
+    print(f"总共获取了 {len(news_items)} 条微信公众号文章")
+    return news_items
+
+def calculate_wechat_heat(account_name, title, pub_time, keyword):
+    """计算微信公众号文章热度"""
+    base_score = 40  # 基础分数
+    
+    # 知名公众号名单及其权重
+    famous_accounts = {
+        "腾讯AI实验室": 30,
+        "腾讯研究院": 30,
+        "百度AI": 30,
+        "智源研究院": 25,
+        "AI科技评论": 25,
+        "机器之心": 25,
+        "量子位": 25,
+        "新智元": 25,
+        "人工智能学家": 20,
+        "AIGC": 20,
+        "专知": 20,
+        "AI前线": 20,
+        "AI新媒体联盟": 20,
+        "中国人工智能学会": 20,
+    }
+    
+    # 根据公众号名称加分
+    for account, score in famous_accounts.items():
+        if account in account_name:
+            base_score += score
+            break
+    else:
+        # 如果不在知名列表中，但有一些关键词，也加分
+        media_keywords = ["AI", "人工智能", "科技", "技术", "学院", "研究", "实验室"]
+        for media_keyword in media_keywords:
+            if media_keyword in account_name:
+                base_score += 10
+                break
+    
+    # 标题权重
+    title_keywords = {
+        "大模型": 15,
+        "GPT-4": 15,
+        "GPT4": 15,
+        "ChatGPT": 15,
+        "LLM": 10,
+        "AIGC": 10,
+        "人工智能": 5,
+        "AI": 5,
+        "模型": 5,
+        "Transformer": 10,
+        "自然语言处理": 5,
+        "NLP": 5,
+        "机器学习": 5,
+        "深度学习": 5,
+    }
+    
+    # 根据标题关键词加分
+    for title_keyword, score in title_keywords.items():
+        if title_keyword in title:
+            base_score += score
+    
+    # 搜索关键词权重 - 精确匹配的关键词分数更高
+    if keyword in title:
+        base_score += 15
+    
+    # 时间权重
+    if "今天" in pub_time:
+        base_score += 20
+    elif "小时" in pub_time:
+        # 提取小时数
+        hour_match = re.search(r'(\d+)小时', pub_time)
+        if hour_match:
+            hours = int(hour_match.group(1))
+            if hours <= 6:
+                base_score += 15
+            else:
+                base_score += 10
+    elif "分钟" in pub_time:
+        base_score += 20
+    elif "昨天" in pub_time:
+        base_score += 5
+    
+    return base_score
+
+def extract_wechat_article_summary(url):
+    """从微信文章页面提取摘要"""
+    try:
+        headers = get_random_headers()
+        # 添加一些额外的请求头，使请求更像浏览器发出的
+        headers.update({
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "zh-CN,zh;q=0.8,en-US;q=0.5,en;q=0.3",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+        })
+        
+        response = requests.get(url, headers=headers, timeout=TIMEOUT)
+        response.encoding = 'utf-8'
+        
+        if response.status_code != 200:
+            print(f"获取微信文章内容失败: {response.status_code}")
+            return None
+            
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # 微信文章内容选择器
+        content_selectors = [
+            "#js_content",  # 标准微信文章内容区
+            ".rich_media_content",  # 另一个常见内容区类名
+            "div.rich_media_area_primary",  # 主要内容区
+            "div.rich_media_area_primary_inner",  # 内容区的内部容器
+        ]
+        
+        for selector in content_selectors:
+            content_elem = soup.select_one(selector)
+            if content_elem:
+                # 移除所有脚本和样式标签
+                for script in content_elem(["script", "style"]):
+                    script.decompose()
+                
+                # 获取段落
+                paragraphs = content_elem.select("p")
+                if paragraphs:
+                    # 提取前3个非空段落作为摘要
+                    text_parts = []
+                    for p in paragraphs:
+                        p_text = p.get_text(strip=True)
+                        if p_text and len(p_text) > 10:  # 忽略太短的段落
+                            text_parts.append(p_text)
+                            if len(text_parts) >= 3:
+                                break
+                    
+                    if text_parts:
+                        summary = " ".join(text_parts)
+                        if len(summary) > 200:
+                            return summary[:200] + "..."
+                        return summary
+                
+                # 如果没有找到段落，获取整个文本
+                text = content_elem.get_text(strip=True)
+                if text:
+                    if len(text) > 200:
+                        return text[:200] + "..."
+                    return text
+        
+        return "无法提取微信文章摘要"
+    
+    except Exception as e:
+        print(f"提取微信文章摘要时出错: {e}")
+        return "提取微信文章摘要时出错"
+
 def generate_daily_report():
     """生成每日日报并保存为CSV"""
     print("开始生成每日大模型新闻日报...")
@@ -377,31 +661,27 @@ def generate_daily_report():
     today = datetime.datetime.now().strftime("%Y-%m-%d")
     filename = os.path.join(DATA_DIR, f"大模型日报_{today}.csv")
     
-    # 从多个来源获取新闻
+    # 只从微信公众号获取新闻
     news_items = []
-    print("正在从百度获取新闻...")
-    news_items.extend(fetch_baidu_news())
-    print(f"从百度获取了 {len(news_items)} 条新闻")
-    
-    print("正在从新浪获取新闻...")
-    sina_news = fetch_sina_news()
-    news_items.extend(sina_news)
-    print(f"从新浪获取了 {len(sina_news)} 条新闻")
+    news_items.extend(fetch_wechat_news())
     
     if not news_items:
-        print("未获取到任何新闻，请检查网络连接或更新选择器")
+        print("未获取到任何微信公众号文章，请检查网络连接或更新选择器")
         return None
     
-    # 去重 (基于URL)
+    # 去重 (基于URL和标题)
     unique_urls = set()
+    unique_titles = set()
     unique_news = []
     
     for item in news_items:
-        if item.url not in unique_urls and item.url:  # 确保URL不为空
+        # 使用URL和标题的组合进行去重
+        if item.url not in unique_urls and item.title not in unique_titles and item.url:
             unique_urls.add(item.url)
+            unique_titles.add(item.title)
             unique_news.append(item)
     
-    print(f"去重后剩余 {len(unique_news)} 条新闻")
+    print(f"去重后剩余 {len(unique_news)} 条微信公众号文章")
     
     # 按热度分数排序
     sorted_news = sorted(unique_news, key=lambda x: x.heat_score, reverse=True)
@@ -414,31 +694,22 @@ def generate_daily_report():
         print(f"正在处理第 {i+1}/{len(top_news)} 条新闻: {item.title[:20]}...")
         
         # 如果摘要为空或者长度不足，尝试获取更详细的摘要
-        if not item.summary or len(item.summary) < 30 or item.summary.startswith("关于'"):
+        if not item.summary or len(item.summary) < 30:
             try:
-                # 对于百度链接，使用特定的提取函数
-                if "baijiahao.baidu.com" in item.url or "mbd.baidu.com" in item.url:
-                    new_summary = extract_baidu_article_summary(item.url)
-                    if new_summary and new_summary not in ["无法获取百度文章内容", "提取百度文章摘要时出错", "未能从百度文章中提取到摘要"]:
-                        item.summary = new_summary
-                        print(f"  成功获取百度文章摘要")
-                    else:
-                        print(f"  无法获取百度文章摘要，保留原摘要")
-                # 对于其他链接，使用通用提取函数
+                # 使用专门的函数提取微信文章摘要
+                new_summary = extract_wechat_article_summary(item.url)
+                if new_summary and new_summary not in ["无法提取微信文章摘要", "提取微信文章摘要时出错"]:
+                    item.summary = new_summary
+                    print(f"  成功获取微信文章摘要")
                 else:
-                    new_summary = get_article_summary(item.url)
-                    if new_summary and new_summary not in ["无法获取文章摘要", "获取摘要时出错"]:
-                        item.summary = new_summary
-                        print(f"  成功获取文章摘要")
-                    else:
-                        print(f"  无法获取文章摘要，保留原摘要")
+                    print(f"  无法获取微信文章摘要，保留原摘要")
             except Exception as e:
                 print(f"  处理摘要时发生错误: {e}")
         else:
             print(f"  已有足够长度的摘要，跳过")
         
         # 休眠一下，避免请求过快
-        time.sleep(1)
+        time.sleep(random.uniform(1, 3))
     
     # 保存为CSV
     try:
@@ -452,20 +723,8 @@ def generate_daily_report():
                 # 移除摘要中的换行符
                 summary = summary.replace('\n', ' ').replace('\r', ' ')
                 
-                # 从摘要中提取并移除可能被错误添加的来源信息
-                source = item.source
-                if not source or source == "未知来源":
-                    # 尝试从摘要末尾提取来源
-                    parts = summary.split("...")
-                    if len(parts) > 1 and len(parts[-1]) < 20:  # 如果摘要末尾有短文本，可能是来源
-                        potential_source = parts[-1].strip()
-                        if potential_source:
-                            source = potential_source
-                            # 从摘要中移除来源
-                            summary = "...".join(parts[:-1]) + "..."
-                
                 # 确保信息来源字段没有多余的逗号
-                source = source.strip().rstrip(',') if source else "未知来源"
+                source = item.source.strip().rstrip(',') if item.source else "未知公众号"
                 
                 writer.writerow([
                     today,
